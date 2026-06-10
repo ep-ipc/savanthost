@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+set -e
+
+cd "$(dirname "$0")/.."
+
+python3 -m pip install --requirement requirements.txt
+
+# Home Assistant installs component dependencies at runtime, but imports them
+# in the same process before they are available. Pre-install default_config
+# requirements so the first hass start succeeds.
+python3 <<'PY'
+import json
+import pathlib
+import subprocess
+import sys
+
+import homeassistant
+
+root = pathlib.Path(homeassistant.__file__).parent / "components"
+domains = [
+    "frontend",
+    "ffmpeg",
+    "usb",
+    "ssdp",
+    "dhcp",
+    "conversation",
+    "stream",
+    "camera",
+    "bluetooth",
+    "tts",
+    "assist_pipeline",
+    "cloud",
+    "go2rtc",
+    "mobile_app",
+    "zeroconf",
+]
+requirements: list[str] = []
+seen: set[str] = set()
+for domain in domains:
+    manifest = root / domain / "manifest.json"
+    if not manifest.exists():
+        continue
+    data = json.loads(manifest.read_text())
+    for req in data.get("requirements", []):
+        if req not in seen:
+            seen.add(req)
+            requirements.append(req)
+
+if requirements:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", *requirements])
+PY
+
+if git rev-parse --git-dir >/dev/null 2>&1; then
+    git config --local core.hooksPath .githooks
+fi

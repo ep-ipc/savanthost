@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -e
+
+exec "$(git rev-parse --show-toplevel)/scripts/lint-staged"

@@ -1,0 +1,24 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This Savant host is already configured.",
+      "reconfigure_successful": "Successfully reconfigured the Savant host.",
+      "unique_id_mismatch": "The host at this address does not match the configured Savant system ({configuration_id})."
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the Savant host.",
+      "avc_cannot_connect": "Failed to connect to the Savant AVC lighting WebSocket on port 8480.",
+      "unknown": "Unexpected error occurred."
+    },
+    "step": {
+      "user": {
+        "data": {
+          "host": "Host",
+          "port": "Port"
+        },
+        "description": "Enter the host address and port for your Savant host Open API.",
+        "title": "Set up Savant Host"
+      }
+    }
+  }
+}

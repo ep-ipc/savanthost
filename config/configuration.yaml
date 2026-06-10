@@ -1,0 +1,16 @@
+# Minimal config for custom integration development.
+# default_config pulls in go2rtc, bluetooth, and other integrations that
+# need host hardware or binaries unavailable in the devcontainer.
+http:
+frontend:
+config:
+
+# https://www.home-assistant.io/integrations/homeassistant/
+homeassistant:
+  debug: true
+
+# https://www.home-assistant.io/integrations/logger/
+logger:
+  default: info
+  logs:
+    custom_components.savanthost: debug

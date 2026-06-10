@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+
+set -e
+
+cd "$(dirname "$0")/.."
+
+if command -v ruff >/dev/null 2>&1; then
+    RUFF=(ruff)
+elif python3 -m ruff --version >/dev/null 2>&1; then
+    RUFF=(python3 -m ruff)
+else
+    cat <<'EOF'
+Ruff is required but was not found.
+
+Install project dependencies (recommended for development):
+  scripts/setup
+
+Or install ruff only:
+  python3 -m pip install ruff
+
+Or install pinned requirements:
+  python3 -m pip install -r requirements.txt
+EOF
+    exit 1
+fi
+
+mapfile -t staged_files < <(git diff --cached --name-only --diff-filter=ACM -- '*.py' '*.pyi')
+
+if ((${#staged_files[@]} == 0)); then
+    exit 0
+fi
+
+if ! "${RUFF[@]}" format --check -- "${staged_files[@]}"; then
+    echo
+    echo "Run scripts/lint to auto-fix formatting issues."
+    exit 1
+fi
+
+if ! "${RUFF[@]}" check -- "${staged_files[@]}"; then
+    echo
+    echo "Run scripts/lint to auto-fix lint issues."
+    exit 1
+fi
