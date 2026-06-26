@@ -110,6 +110,19 @@ class SavantApi:
         _LOGGER.debug("Location state for %s: %s", state_name, result)
         return result
 
+    async def async_get_services(self) -> list[dict[str, Any]]:
+        """Get all Savant services."""
+        result = await self._async_get_json("/config/v1/services")
+        if not isinstance(result, list):
+            msg = "Unexpected services response"
+            raise SavantApiError(msg)
+        return result
+
+    async def async_execute_service(self, body: dict[str, Any]) -> None:
+        """Execute a command on a Savant service."""
+        _LOGGER.debug("Executing service command: %s", body.get("command"))
+        await self._async_post_json("/config/v1/services", body)
+
     async def _async_get_json(
         self, path: str, params: dict[str, str] | None = None
     ) -> Any:

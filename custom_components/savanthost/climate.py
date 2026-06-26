@@ -11,6 +11,7 @@ from homeassistant.components.climate import (
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .api import SavantConnectionError
 from .const import DOMAIN
 from .coordinator import SavantConfigEntry, SavantCoordinator
 
@@ -56,7 +57,6 @@ class SavantClimateEntity(CoordinatorEntity[SavantCoordinator], ClimateEntity):
 
     _attr_has_entity_name = True
     _attr_name = None
-    _attr_supported_features = ClimateEntityFeature(0)
 
     def __init__(
         self,
@@ -78,6 +78,20 @@ class SavantClimateEntity(CoordinatorEntity[SavantCoordinator], ClimateEntity):
             hvac_modes.append(HVACMode.HEAT_COOL)
         self._attr_hvac_modes = hvac_modes
 
+        features = ClimateEntityFeature(0)
+        if thermostat.service is not None:
+            if thermostat.heat_supported and thermostat.cool_supported:
+                features |= ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+            elif thermostat.heat_supported or thermostat.cool_supported:
+                features |= ClimateEntityFeature.TARGET_TEMPERATURE
+            features |= ClimateEntityFeature.FAN_MODE
+        self._attr_supported_features = features
+
+        if coordinator.min_temp is not None:
+            self._attr_min_temp = coordinator.min_temp
+        if coordinator.max_temp is not None:
+            self._attr_max_temp = coordinator.max_temp
+
         room = coordinator.data.rooms.get(thermostat.room_id)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, thermostat.device_id)},
@@ -86,6 +100,11 @@ class SavantClimateEntity(CoordinatorEntity[SavantCoordinator], ClimateEntity):
             suggested_area=room.name if room is not None else None,
             via_device=(DOMAIN, configuration_id),
         )
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return self.coordinator.last_update_success
 
     def _thermostat_state(self) -> SavantThermostatState | None:
         """Return the latest polled state for this thermostat, or None."""
@@ -127,9 +146,21 @@ class SavantClimateEntity(CoordinatorEntity[SavantCoordinator], ClimateEntity):
         return state.fan_mode_raw.lower()
 
     @property
-    def fan_modes(self) -> list[str]:
+    def fan_modes(self) -> list[str] | None:
         """Return the list of available fan modes."""
-        return ["auto", "on", "cycle"]
+        if self._thermostat.service is None:
+            return None
+        return ["auto", "on"]
+
+    @property
+    def target_temperature(self) -> float | None:
+        """Return the target temperature for single-setpoint modes."""
+        mode = self.hvac_mode
+        if mode == HVACMode.HEAT:
+            return self.target_temperature_low
+        if mode == HVACMode.COOL:
+            return self.target_temperature_high
+        return None
 
     @property
     def target_temperature_high(self) -> float | None:
@@ -150,3 +181,57 @@ class SavantClimateEntity(CoordinatorEntity[SavantCoordinator], ClimateEntity):
         if state is None or state.humidity_mode_raw is None:
             return {}
         return {"humidity_mode": state.humidity_mode_raw}
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        """Set new target HVAC mode."""
+        try:
+            await self.coordinator.async_set_thermostat_hvac_mode(
+                self._thermostat.device_id, hvac_mode
+            )
+        except SavantConnectionError:
+            self.coordinator.logger.exception(
+                "Failed to set HVAC mode on %s", self.entity_id
+            )
+            raise
+
+    async def async_set_temperature(self, **kwargs: Any) -> None:
+        """Set new target temperature."""
+        heat = kwargs.get("target_temp_low")
+        cool = kwargs.get("target_temp_high")
+        temperature = kwargs.get("temperature")
+
+        if temperature is not None:
+            mode = self.hvac_mode
+            if mode == HVACMode.HEAT:
+                heat = temperature
+            elif mode == HVACMode.COOL:
+                cool = temperature
+            elif mode == HVACMode.HEAT_COOL:
+                if heat is None:
+                    heat = temperature
+                if cool is None:
+                    cool = temperature
+
+        try:
+            await self.coordinator.async_set_thermostat_temperature(
+                self._thermostat.device_id,
+                heat=heat,
+                cool=cool,
+            )
+        except SavantConnectionError:
+            self.coordinator.logger.exception(
+                "Failed to set temperature on %s", self.entity_id
+            )
+            raise
+
+    async def async_set_fan_mode(self, fan_mode: str) -> None:
+        """Set new target fan mode."""
+        try:
+            await self.coordinator.async_set_thermostat_fan_mode(
+                self._thermostat.device_id, fan_mode
+            )
+        except SavantConnectionError:
+            self.coordinator.logger.exception(
+                "Failed to set fan mode on %s", self.entity_id
+            )
+            raise

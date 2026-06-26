@@ -1,12 +1,25 @@
 """Tests for Savant Host models."""
 
+from custom_components.savanthost.const import (
+    ARG_COOL_POINT,
+    ARG_HEAT_POINT,
+    ARG_THERMOSTAT_ADDRESS,
+    CMD_SET_COOL_POINT,
+    CMD_SET_HEAT_POINT,
+    CMD_SET_HVAC_MODE_HEAT,
+)
 from custom_components.savanthost.models import (
     SavantLoad,
+    SavantThermostat,
+    _score_hvac_service_zone,
+    build_hvac_service_command,
     compute_load_hex_address,
+    match_hvac_services,
     parse_avc_state_update,
     parse_load_level_value,
     parse_module_get_response,
     parse_module_level_at_offset,
+    parse_service_request,
 )
 
 
@@ -98,3 +111,196 @@ def test_parse_module_get_response_uses_raw_address() -> None:
         loads,
     )
     assert updates == {"load-1": 80, "load-2": 60}
+
+
+def test_parse_service_request() -> None:
+    """Test parsing a documented serviceRequest string."""
+    binding = parse_service_request(
+        "Library-1st Floor Guest Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
+    )
+    assert binding.zone == "Library"
+    assert binding.component == "1st Floor Guest Thermostat"
+    assert binding.logical_component == "HVAC_controller"
+    assert binding.service_variant_id == "1"
+    assert binding.service_type == "SVC_ENV_HVAC"
+
+
+def test_parse_service_request_component_with_dashes() -> None:
+    """Test parsing when the component name contains dashes."""
+    binding = parse_service_request(
+        "Library-1st-Floor-Guest-Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
+    )
+    assert binding.component == "1st-Floor-Guest-Thermostat"
+
+
+def test_match_hvac_services() -> None:
+    """Test matching HVAC services to thermostats by alias."""
+    thermostats = {
+        "dev-1": SavantThermostat(
+            device_id="dev-1",
+            room_id="room-1",
+            name="Guest Thermostat",
+            thermostat_address="1",
+            current_temp_state_name=None,
+            hvac_mode_state_name=None,
+            fan_mode_state_name=None,
+            cool_point_state_name=None,
+            heat_point_state_name=None,
+            hvac_action_state_name=None,
+            humidity_mode_state_name=None,
+            heat_supported=True,
+            cool_supported=True,
+            auto_supported=True,
+        ),
+    }
+    services = [
+        {
+            "name": "SVC_ENV_HVAC",
+            "alias": "Guest Thermostat",
+            "serviceRequest": "Library-Guest Thermostat-HVAC_controller-1-SVC_ENV_HVAC",
+        },
+        {
+            "name": "SVC_ENV_LIGHTING",
+            "alias": "Kitchen Lights",
+            "serviceRequest": "Kitchen-Kitchen Lights-Light-1-SVC_ENV_LIGHTING",
+        },
+    ]
+    bindings = match_hvac_services(services, thermostats)
+    assert "dev-1" in bindings
+    assert bindings["dev-1"].component == "Guest Thermostat"
+
+
+def test_match_hvac_services_prefers_local_zone() -> None:
+    """Test that the best zone is chosen when alias appears in many zones."""
+    thermostats = {
+        "kitchen": SavantThermostat(
+            device_id="kitchen",
+            room_id="room-kitchen",
+            name="Kitchen Thermostat",
+            thermostat_address="1",
+            current_temp_state_name=None,
+            hvac_mode_state_name=None,
+            fan_mode_state_name=None,
+            cool_point_state_name=None,
+            heat_point_state_name=None,
+            hvac_action_state_name=None,
+            humidity_mode_state_name=None,
+            heat_supported=True,
+            cool_supported=True,
+            auto_supported=True,
+        ),
+    }
+    services = [
+        {
+            "name": "SVC_ENV_HVAC",
+            "alias": "Kitchen Thermostat",
+            "serviceRequest": (
+                "Hallways-Kitchen Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
+            ),
+        },
+        {
+            "name": "SVC_ENV_HVAC",
+            "alias": "Kitchen Thermostat",
+            "serviceRequest": (
+                "Kitchen-Kitchen Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
+            ),
+        },
+        {
+            "name": "SVC_ENV_HVAC",
+            "alias": "Kitchen Thermostat",
+            "serviceRequest": (
+                "Library-Kitchen Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
+            ),
+        },
+    ]
+    bindings = match_hvac_services(services, thermostats)
+    assert bindings["kitchen"].zone == "Kitchen"
+    assert (
+        _score_hvac_service_zone(bindings["kitchen"].zone, "Kitchen Thermostat") == 100
+    )
+
+
+def test_match_hvac_services_zone_override() -> None:
+    """Test zone hint overrides for abbreviated thermostat names."""
+    thermostats = {
+        "master-bed": SavantThermostat(
+            device_id="master-bed",
+            room_id="room-1",
+            name="2nd FL Master Bed Thermostat",
+            thermostat_address="1",
+            current_temp_state_name=None,
+            hvac_mode_state_name=None,
+            fan_mode_state_name=None,
+            cool_point_state_name=None,
+            heat_point_state_name=None,
+            hvac_action_state_name=None,
+            humidity_mode_state_name=None,
+            heat_supported=True,
+            cool_supported=True,
+            auto_supported=True,
+        ),
+    }
+    services = [
+        {
+            "name": "SVC_ENV_HVAC",
+            "alias": "2nd FL Master Bed Thermostat",
+            "serviceRequest": (
+                "Hallways-2nd FL Master Bed Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
+            ),
+        },
+        {
+            "name": "SVC_ENV_HVAC",
+            "alias": "2nd FL Master Bed Thermostat",
+            "serviceRequest": (
+                "2nd Floor Master Bed-2nd FL Master Bed Thermostat-"
+                "HVAC_controller-1-SVC_ENV_HVAC"
+            ),
+        },
+    ]
+    bindings = match_hvac_services(services, thermostats)
+    assert bindings["master-bed"].zone == "2nd Floor Master Bed"
+
+
+def test_build_hvac_service_command() -> None:
+    """Test building a POST body for /config/v1/services."""
+    binding = parse_service_request(
+        "Library-1st Floor Guest Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
+    )
+    body = build_hvac_service_command(
+        binding,
+        "1",
+        CMD_SET_HVAC_MODE_HEAT,
+    )
+    assert body == {
+        "command": CMD_SET_HVAC_MODE_HEAT,
+        "component": "1st Floor Guest Thermostat",
+        "logicalComponent": "HVAC_controller",
+        "serviceVariantID": "1",
+        "type": "SVC_ENV_HVAC",
+        "zone": "Library",
+        "arguments": {ARG_THERMOSTAT_ADDRESS: "1"},
+    }
+
+
+def test_build_hvac_service_command_with_temperature() -> None:
+    """Test building setpoint commands with extra arguments."""
+    binding = parse_service_request(
+        "Library-1st Floor Guest Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
+    )
+    heat_body = build_hvac_service_command(
+        binding,
+        "2",
+        CMD_SET_HEAT_POINT,
+        {ARG_HEAT_POINT: "72"},
+    )
+    assert heat_body["arguments"] == {
+        ARG_THERMOSTAT_ADDRESS: "2",
+        ARG_HEAT_POINT: "72",
+    }
+    cool_body = build_hvac_service_command(
+        binding,
+        "2",
+        CMD_SET_COOL_POINT,
+        {ARG_COOL_POINT: "74"},
+    )
+    assert cool_body["arguments"][ARG_COOL_POINT] == "74"

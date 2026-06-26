@@ -165,6 +165,37 @@ from sclibridge help:
       <dash separated service request: (zone)-(source component)-(source logical component)-(service variant)-(service type)-(request)> <first argument name> <first argument value> ...
 ```
 
+Available thermostat commands that have been discovered:
+
+SetCoolPointTemperature
+SetEcoCoolPointTemperature
+SetEcoHeatPointTemperature
+SetFanModeAuto
+SetFanModeOn
+SetHeatPointTemperature
+SetHumidityModeOff
+SetHumidityModeOn
+SetHumiditySetPoint
+SetHVACModeAuto
+SetHVACModeCool
+SetHVACModeEco
+SetHVACModeHeat
+SetHVACModeOff
+
+This integration uses `POST /config/v1/services` for thermostat control. Service routing fields are parsed from each thermostat's `serviceRequest` (matched by service `alias` == HVAC component `name`). The Home Assistant climate entity maps to these commands:
+
+| HA action | Savant command |
+|-----------|----------------|
+| HVAC mode Off | `SetHVACModeOff` |
+| HVAC mode Heat | `SetHVACModeHeat` |
+| HVAC mode Cool | `SetHVACModeCool` |
+| HVAC mode Heat/Cool (auto) | `SetHVACModeAuto` |
+| Heat setpoint | `SetHeatPointTemperature` |
+| Cool setpoint | `SetCoolPointTemperature` |
+| Fan auto / on | `SetFanModeAuto` / `SetFanModeOn` |
+
+Not yet exposed in Home Assistant: eco mode (`SetHVACModeEco`, eco setpoints) and humidity control (`SetHumidityMode*`, `SetHumiditySetPoint`). Humidity mode is readable as a state attribute.
+
 ### AVC Websocket
 
 The AVC Websocket is used for:
@@ -180,4 +211,3 @@ Why not use the AVC Websocket to set state?
 
 * You can set state for lighting via the websocket, however for other devices there's no documentation out there on how this works.  Since it was available in the API along with controlling thermostats (HVAC devices), it made sense to consolidate everyhting in one place.
 
-### Feedback Websocket

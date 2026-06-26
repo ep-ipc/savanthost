@@ -3,8 +3,35 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+from .const import ARG_THERMOSTAT_ADDRESS, HVAC_SERVICE_TYPES
+
 WS_URI_DEVICE_RECOGNIZED = "session/deviceRecognized"
 WS_URI_STATE_UPDATE = "state/update"
+MIN_SERVICE_REQUEST_PARTS = 5
+
+# Savant exposes the same thermostat alias in every zone; avoid these when possible.
+# NOTE: This is VERY installation specific - we should avoid this.
+GENERIC_HVAC_ZONES = frozenset(
+    {
+        "Hallways",
+        "Library",
+        "Cabana",
+        "Exterior",
+        "Elevator Housing",
+        "Pool",
+        "2nd Floor Master Bath",
+        "Living Room",
+        "Garage",
+        "Master Bathroom",
+    }
+)
+
+# Thermostat name hints that do not exactly match a Savant zone name.
+ZONE_HINT_OVERRIDES: dict[str, str] = {
+    "2nd FL Master Bed": "2nd Floor Master Bed",
+    "1st Floor Guest": "Guest Room Downstairs",
+    "2nd Floor Guest": "Guest Room Upstairs",
+}
 
 
 @dataclass(slots=True)
@@ -62,12 +89,24 @@ class SavantThermostatState:
 
 
 @dataclass(slots=True)
+class SavantHvacServiceBinding:
+    """Parsed HVAC service routing fields for POST /config/v1/services."""
+
+    zone: str
+    component: str
+    logical_component: str
+    service_variant_id: str
+    service_type: str
+
+
+@dataclass(slots=True)
 class SavantThermostat:
     """Savant HVAC thermostat component."""
 
     device_id: str
     room_id: str
     name: str
+    thermostat_address: str
     current_temp_state_name: str | None
     hvac_mode_state_name: str | None
     fan_mode_state_name: str | None
@@ -78,6 +117,7 @@ class SavantThermostat:
     heat_supported: bool
     cool_supported: bool
     auto_supported: bool
+    service: SavantHvacServiceBinding | None = None
 
 
 @dataclass(slots=True)
@@ -281,20 +321,117 @@ def _resolve_state_name(
     return None
 
 
+def parse_service_request(service_request: str) -> SavantHvacServiceBinding:
+    """
+    Parse a dash-separated serviceRequest string.
+
+    Format: zone-component-logicalComponent-variant-type
+    Component names may contain dashes; fixed tail fields are parsed from the right.
+    """
+    parts = service_request.split("-")
+    if len(parts) < MIN_SERVICE_REQUEST_PARTS:
+        msg = f"Invalid serviceRequest: {service_request!r}"
+        raise ValueError(msg)
+    return SavantHvacServiceBinding(
+        zone=parts[0],
+        component="-".join(parts[1:-3]),
+        logical_component=parts[-3],
+        service_variant_id=parts[-2],
+        service_type=parts[-1],
+    )
+
+
+def _score_hvac_service_zone(zone: str, thermostat_name: str) -> int:
+    """Score how well a service zone matches a thermostat's physical location."""
+    hint = thermostat_name.removesuffix(" Thermostat")
+    if zone == hint:
+        return 100
+    mapped = ZONE_HINT_OVERRIDES.get(hint)
+    if mapped is not None and zone == mapped:
+        return 95
+    hint_norm = hint.replace(" ", "").lower()
+    zone_norm = zone.replace(" ", "").lower()
+    if hint_norm in zone_norm or zone_norm in hint_norm:
+        return 70
+    if zone in GENERIC_HVAC_ZONES:
+        return 10
+    return 50
+
+
+def match_hvac_services(
+    services_data: list[dict[str, Any]],
+    thermostats: dict[str, SavantThermostat],
+) -> dict[str, SavantHvacServiceBinding]:
+    """Match HVAC services to thermostats by alias and best zone."""
+    bindings: dict[str, SavantHvacServiceBinding] = {}
+    scores: dict[str, int] = {}
+
+    for device_id, thermostat in thermostats.items():
+        best_score = -1
+        best_binding: SavantHvacServiceBinding | None = None
+
+        for service in services_data:
+            if service.get("name") not in HVAC_SERVICE_TYPES:
+                continue
+            if service.get("alias") != thermostat.name:
+                continue
+            service_request = service.get("serviceRequest")
+            if not isinstance(service_request, str):
+                continue
+            try:
+                binding = parse_service_request(service_request)
+            except ValueError:
+                continue
+            score = _score_hvac_service_zone(binding.zone, thermostat.name)
+            if score > best_score:
+                best_score = score
+                best_binding = binding
+
+        if best_binding is not None:
+            bindings[device_id] = best_binding
+            scores[device_id] = best_score
+
+    return bindings
+
+
+def build_hvac_service_command(
+    binding: SavantHvacServiceBinding,
+    thermostat_address: str,
+    command: str,
+    extra_arguments: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build the POST body for /config/v1/services."""
+    arguments: dict[str, str] = {ARG_THERMOSTAT_ADDRESS: thermostat_address}
+    if extra_arguments:
+        arguments.update(extra_arguments)
+    return {
+        "command": command,
+        "component": binding.component,
+        "logicalComponent": binding.logical_component,
+        "serviceVariantID": binding.service_variant_id,
+        "type": binding.service_type,
+        "zone": binding.zone,
+        "arguments": arguments,
+    }
+
+
 def parse_hvac_components(
     components_data: list[dict[str, Any]],
     state_names_by_device: dict[str, list[str]],
+    service_bindings: dict[str, SavantHvacServiceBinding] | None = None,
 ) -> dict[str, SavantThermostat]:
     """Parse HVAC component data into SavantThermostat objects."""
+    bindings = service_bindings or {}
     thermostats: dict[str, SavantThermostat] = {}
     for component in components_data:
         device_id = component["deviceID"]
-        address1 = component.get("address1", "1")
+        address1 = str(component.get("address1", "1"))
         names = state_names_by_device.get(device_id, [])
         thermostats[device_id] = SavantThermostat(
             device_id=device_id,
             room_id=component["roomID"],
             name=component["name"],
+            thermostat_address=address1,
             current_temp_state_name=_resolve_state_name(
                 names, "ThermostatCurrentTemperature", address1
             ),
@@ -317,6 +454,7 @@ def parse_hvac_components(
             heat_supported=bool(component.get("heatControlSupported")),
             cool_supported=bool(component.get("coolControlSupported")),
             auto_supported=bool(component.get("autoControlSupported")),
+            service=bindings.get(device_id),
         )
     return thermostats
 
