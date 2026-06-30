@@ -34,7 +34,6 @@ from .const import (
     HA_TO_SAVANT_FAN_MODE,
     HA_TO_SAVANT_HVAC_MODE,
     HVAC_SCAN_INTERVAL,
-    HVAC_SERVICE_MATCH_MIN_SCORE,
     LOGGER,
     SCAN_INTERVAL,
     WS_RECONNECT_INTERVAL,
@@ -43,7 +42,6 @@ from .models import (
     SavantHostData,
     SavantThermostat,
     SavantThermostatState,
-    _score_hvac_service_zone,
     apply_state_updates,
     apply_thermostat_state_updates,
     build_hvac_service_command,
@@ -146,27 +144,7 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
             or hvac_settings_data.get("maxTemperature")
         )
 
-        state_names_by_device: dict[str, list[str]] = {}
-        for component in hvac_components_data:
-            device_id = component.get("deviceID", "")
-            try:
-                names = await self._api.async_get_hvac_state_names(device_id)
-                LOGGER.debug(
-                    "State names for HVAC component %s (%s): %s",
-                    component.get("name"),
-                    device_id,
-                    names,
-                )
-                state_names_by_device[device_id] = names
-            except SavantConnectionError:
-                LOGGER.warning(
-                    "Could not fetch state names for HVAC component %s", device_id
-                )
-                state_names_by_device[device_id] = []
-
-        thermostats_without_services = parse_hvac_components(
-            hvac_components_data, state_names_by_device
-        )
+        thermostats_without_services = parse_hvac_components(hvac_components_data)
         service_bindings = match_hvac_services(
             services_data, thermostats_without_services
         )
@@ -178,26 +156,8 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
                     device_id,
                 )
                 continue
-            binding = service_bindings[device_id]
-            score = _score_hvac_service_zone(binding.zone, thermostat.name)
-            if score < HVAC_SERVICE_MATCH_MIN_SCORE:
-                LOGGER.warning(
-                    "Weak HVAC service match for %s (%s): using zone %r (score %d)",
-                    thermostat.name,
-                    device_id,
-                    binding.zone,
-                    score,
-                )
-            else:
-                LOGGER.debug(
-                    "Matched HVAC service for %s to zone %r (score %d)",
-                    thermostat.name,
-                    binding.zone,
-                    score,
-                )
         thermostats = parse_hvac_components(
             hvac_components_data,
-            state_names_by_device,
             service_bindings,
         )
 

@@ -1,5 +1,6 @@
 """Data models for the Savant Host integration."""
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,6 +33,8 @@ ZONE_HINT_OVERRIDES: dict[str, str] = {
     "1st Floor Guest": "Guest Room Downstairs",
     "2nd Floor Guest": "Guest Room Upstairs",
 }
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -318,6 +321,7 @@ def _resolve_state_name(
     base = next((s for s in state_names if s.endswith(f".{base_suffix}")), None)
     if base is not None:
         return f"{base}_{address1}"
+    _LOGGER.warning("Could not resolve state name for %s %s", base_suffix, address1)
     return None
 
 
@@ -362,14 +366,13 @@ def match_hvac_services(
     services_data: list[dict[str, Any]],
     thermostats: dict[str, SavantThermostat],
 ) -> dict[str, SavantHvacServiceBinding]:
-    """Match HVAC services to thermostats by alias and best zone."""
+    """Match HVAC services to thermostats by alias and first available zone."""
+    # This will match the first service found for a thermostat.
+    # In testing, services returns multiple services for a single thermostat, which all
+    # work on the same device ultimately. So the first matching one found is fine.
     bindings: dict[str, SavantHvacServiceBinding] = {}
-    scores: dict[str, int] = {}
 
     for device_id, thermostat in thermostats.items():
-        best_score = -1
-        best_binding: SavantHvacServiceBinding | None = None
-
         for service in services_data:
             if service.get("name") not in HVAC_SERVICE_TYPES:
                 continue
@@ -382,14 +385,8 @@ def match_hvac_services(
                 binding = parse_service_request(service_request)
             except ValueError:
                 continue
-            score = _score_hvac_service_zone(binding.zone, thermostat.name)
-            if score > best_score:
-                best_score = score
-                best_binding = binding
-
-        if best_binding is not None:
-            bindings[device_id] = best_binding
-            scores[device_id] = best_score
+            bindings[device_id] = binding
+            break
 
     return bindings
 
@@ -417,7 +414,6 @@ def build_hvac_service_command(
 
 def parse_hvac_components(
     components_data: list[dict[str, Any]],
-    state_names_by_device: dict[str, list[str]],
     service_bindings: dict[str, SavantHvacServiceBinding] | None = None,
 ) -> dict[str, SavantThermostat]:
     """Parse HVAC component data into SavantThermostat objects."""
@@ -426,31 +422,18 @@ def parse_hvac_components(
     for component in components_data:
         device_id = component["deviceID"]
         address1 = str(component.get("address1", "1"))
-        names = state_names_by_device.get(device_id, [])
         thermostats[device_id] = SavantThermostat(
             device_id=device_id,
             room_id=component["roomID"],
             name=component["name"],
             thermostat_address=address1,
-            current_temp_state_name=_resolve_state_name(
-                names, "ThermostatCurrentTemperature", address1
-            ),
-            hvac_mode_state_name=_resolve_state_name(names, "ThermostatMode", address1),
-            fan_mode_state_name=_resolve_state_name(
-                names, "ThermostatFanMode", address1
-            ),
-            cool_point_state_name=_resolve_state_name(
-                names, "ThermostatCurrentCoolPoint", address1
-            ),
-            heat_point_state_name=_resolve_state_name(
-                names, "ThermostatCurrentHeatPoint", address1
-            ),
-            hvac_action_state_name=_resolve_state_name(
-                names, "ThermostatHVACState", address1
-            ),
-            humidity_mode_state_name=_resolve_state_name(
-                names, "ThermostatHumidityMode", address1
-            ),
+            current_temp_state_name=f"{component['name']}.HVAC_controller.ThermostatCurrentTemperature_{address1}",
+            hvac_mode_state_name=f"{component['name']}.HVAC_controller.ThermostatMode_{address1}",
+            fan_mode_state_name=f"{component['name']}.HVAC_controller.ThermostatFanMode_{address1}",
+            cool_point_state_name=f"{component['name']}.HVAC_controller.ThermostatCurrentCoolPoint_{address1}",
+            heat_point_state_name=f"{component['name']}.HVAC_controller.ThermostatCurrentHeatPoint_{address1}",
+            hvac_action_state_name=f"{component['name']}.HVAC_controller.ThermostatHVACState_{address1}",
+            humidity_mode_state_name=f"{component['name']}.HVAC_controller.ThermostatHumidityMode_{address1}",
             heat_supported=bool(component.get("heatControlSupported")),
             cool_supported=bool(component.get("coolControlSupported")),
             auto_supported=bool(component.get("autoControlSupported")),

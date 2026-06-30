@@ -90,17 +90,6 @@ class SavantApi:
         """Get global HVAC settings (includes temperatureUnits)."""
         return await self._async_get_json("/config/v1/hvac/settings")
 
-    async def async_get_hvac_state_names(self, device_id: str) -> list[str]:
-        """Return the list of state strings for an HVAC component."""
-        result = await self._async_get_json(
-            "/feedback/v1/states/hvac", params={"DeviceID": device_id}
-        )
-        return [
-            s["StateString"]
-            for s in result.get("States", [])
-            if isinstance(s.get("StateString"), str)
-        ]
-
     async def async_get_location_state(self, state_name: str) -> dict[str, Any]:
         """Read a named state value from StateCenter."""
         _LOGGER.debug("Getting location state for %s", state_name)
