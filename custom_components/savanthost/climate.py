@@ -81,7 +81,10 @@ class SavantClimateEntity(CoordinatorEntity[SavantCoordinator], ClimateEntity):
         features = ClimateEntityFeature(0)
         if thermostat.service is not None:
             if thermostat.heat_supported and thermostat.cool_supported:
-                features |= ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+                features |= (
+                    ClimateEntityFeature.TARGET_TEMPERATURE
+                    | ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+                )
             elif thermostat.heat_supported or thermostat.cool_supported:
                 features |= ClimateEntityFeature.TARGET_TEMPERATURE
             features |= ClimateEntityFeature.FAN_MODE
