@@ -11,15 +11,17 @@ from custom_components.savanthost.const import (
 from custom_components.savanthost.models import (
     SavantLoad,
     SavantThermostat,
-    _score_hvac_service_zone,
+    SavantThermostatState,
     build_hvac_service_command,
     compute_load_hex_address,
     match_hvac_services,
+    merge_thermostat_state,
     parse_avc_state_update,
     parse_load_level_value,
     parse_module_get_response,
     parse_module_level_at_offset,
     parse_service_request,
+    state_patch_for_command,
 )
 
 
@@ -170,8 +172,8 @@ def test_match_hvac_services() -> None:
     assert bindings["dev-1"].component == "Guest Thermostat"
 
 
-def test_match_hvac_services_prefers_local_zone() -> None:
-    """Test that the best zone is chosen when alias appears in many zones."""
+def test_match_hvac_services_uses_first_match() -> None:
+    """Test that the first matching service is used when alias appears in many zones."""
     thermostats = {
         "kitchen": SavantThermostat(
             device_id="kitchen",
@@ -205,60 +207,9 @@ def test_match_hvac_services_prefers_local_zone() -> None:
                 "Kitchen-Kitchen Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
             ),
         },
-        {
-            "name": "SVC_ENV_HVAC",
-            "alias": "Kitchen Thermostat",
-            "serviceRequest": (
-                "Library-Kitchen Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
-            ),
-        },
     ]
     bindings = match_hvac_services(services, thermostats)
-    assert bindings["kitchen"].zone == "Kitchen"
-    assert (
-        _score_hvac_service_zone(bindings["kitchen"].zone, "Kitchen Thermostat") == 100
-    )
-
-
-def test_match_hvac_services_zone_override() -> None:
-    """Test zone hint overrides for abbreviated thermostat names."""
-    thermostats = {
-        "master-bed": SavantThermostat(
-            device_id="master-bed",
-            room_id="room-1",
-            name="2nd FL Master Bed Thermostat",
-            thermostat_address="1",
-            current_temp_state_name=None,
-            hvac_mode_state_name=None,
-            fan_mode_state_name=None,
-            cool_point_state_name=None,
-            heat_point_state_name=None,
-            hvac_action_state_name=None,
-            humidity_mode_state_name=None,
-            heat_supported=True,
-            cool_supported=True,
-            auto_supported=True,
-        ),
-    }
-    services = [
-        {
-            "name": "SVC_ENV_HVAC",
-            "alias": "2nd FL Master Bed Thermostat",
-            "serviceRequest": (
-                "Hallways-2nd FL Master Bed Thermostat-HVAC_controller-1-SVC_ENV_HVAC"
-            ),
-        },
-        {
-            "name": "SVC_ENV_HVAC",
-            "alias": "2nd FL Master Bed Thermostat",
-            "serviceRequest": (
-                "2nd Floor Master Bed-2nd FL Master Bed Thermostat-"
-                "HVAC_controller-1-SVC_ENV_HVAC"
-            ),
-        },
-    ]
-    bindings = match_hvac_services(services, thermostats)
-    assert bindings["master-bed"].zone == "2nd Floor Master Bed"
+    assert bindings["kitchen"].zone == "Hallways"
 
 
 def test_build_hvac_service_command() -> None:
@@ -304,3 +255,30 @@ def test_build_hvac_service_command_with_temperature() -> None:
         {ARG_COOL_POINT: "74"},
     )
     assert cool_body["arguments"][ARG_COOL_POINT] == "74"
+
+
+def test_merge_thermostat_state() -> None:
+    """Test merging optimistic patches into existing thermostat state."""
+    existing = SavantThermostatState(
+        current_temperature=72.0,
+        hvac_mode_raw="off",
+        cool_point=77.0,
+    )
+    merged = merge_thermostat_state(
+        existing,
+        SavantThermostatState(hvac_mode_raw="cool", heat_point=74.0),
+    )
+    assert merged.current_temperature == 72.0
+    assert merged.hvac_mode_raw == "cool"
+    assert merged.cool_point == 77.0
+    assert merged.heat_point == 74.0
+
+
+def test_state_patch_for_command() -> None:
+    """Test building optimistic state patches from Savant commands."""
+    assert state_patch_for_command(CMD_SET_HVAC_MODE_HEAT) == SavantThermostatState(
+        hvac_mode_raw="heat"
+    )
+    assert state_patch_for_command(
+        CMD_SET_COOL_POINT, {ARG_COOL_POINT: "78"}
+    ) == SavantThermostatState(cool_point=78.0)

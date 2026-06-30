@@ -10,9 +10,6 @@ DOMAIN = "savanthost"
 
 HVAC_SERVICE_TYPES = frozenset({"SVC_ENV_HVAC", "SVC_ENV_SINGLE_SETPOINT_HVAC"})
 
-# Minimum zone match score before logging a weak HVAC service binding warning.
-HVAC_SERVICE_MATCH_MIN_SCORE = 70
-
 CMD_SET_HVAC_MODE_OFF = "SetHVACModeOff"
 CMD_SET_HVAC_MODE_HEAT = "SetHVACModeHeat"
 CMD_SET_HVAC_MODE_COOL = "SetHVACModeCool"
@@ -37,6 +34,21 @@ HA_TO_SAVANT_FAN_MODE: dict[str, str] = {
     "auto": CMD_SET_FAN_MODE_AUTO,
     "on": CMD_SET_FAN_MODE_ON,
 }
+
+SAVANT_MODE_FROM_COMMAND: dict[str, str] = {
+    CMD_SET_HVAC_MODE_OFF: "off",
+    CMD_SET_HVAC_MODE_HEAT: "heat",
+    CMD_SET_HVAC_MODE_COOL: "cool",
+    CMD_SET_HVAC_MODE_AUTO: "auto",
+}
+
+SAVANT_FAN_FROM_COMMAND: dict[str, str] = {
+    CMD_SET_FAN_MODE_AUTO: "auto",
+    CMD_SET_FAN_MODE_ON: "on",
+}
+
+# Delays (seconds) before re-polling Savant after a command to reconcile state.
+HVAC_COMMAND_REFRESH_DELAYS = (0.5, 1.5)
 
 DEFAULT_PORT = 3060
 DEFAULT_AVC_PORT = 8480

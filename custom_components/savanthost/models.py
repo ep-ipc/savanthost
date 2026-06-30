@@ -1,38 +1,23 @@
 """Data models for the Savant Host integration."""
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .const import ARG_THERMOSTAT_ADDRESS, HVAC_SERVICE_TYPES
+from .const import (
+    ARG_COOL_POINT,
+    ARG_HEAT_POINT,
+    ARG_THERMOSTAT_ADDRESS,
+    CMD_SET_COOL_POINT,
+    CMD_SET_HEAT_POINT,
+    HVAC_SERVICE_TYPES,
+    SAVANT_FAN_FROM_COMMAND,
+    SAVANT_MODE_FROM_COMMAND,
+)
 
 WS_URI_DEVICE_RECOGNIZED = "session/deviceRecognized"
 WS_URI_STATE_UPDATE = "state/update"
 MIN_SERVICE_REQUEST_PARTS = 5
-
-# Savant exposes the same thermostat alias in every zone; avoid these when possible.
-# NOTE: This is VERY installation specific - we should avoid this.
-GENERIC_HVAC_ZONES = frozenset(
-    {
-        "Hallways",
-        "Library",
-        "Cabana",
-        "Exterior",
-        "Elevator Housing",
-        "Pool",
-        "2nd Floor Master Bath",
-        "Living Room",
-        "Garage",
-        "Master Bathroom",
-    }
-)
-
-# Thermostat name hints that do not exactly match a Savant zone name.
-ZONE_HINT_OVERRIDES: dict[str, str] = {
-    "2nd FL Master Bed": "2nd Floor Master Bed",
-    "1st Floor Guest": "Guest Room Downstairs",
-    "2nd Floor Guest": "Guest Room Upstairs",
-}
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -345,31 +330,11 @@ def parse_service_request(service_request: str) -> SavantHvacServiceBinding:
     )
 
 
-def _score_hvac_service_zone(zone: str, thermostat_name: str) -> int:
-    """Score how well a service zone matches a thermostat's physical location."""
-    hint = thermostat_name.removesuffix(" Thermostat")
-    if zone == hint:
-        return 100
-    mapped = ZONE_HINT_OVERRIDES.get(hint)
-    if mapped is not None and zone == mapped:
-        return 95
-    hint_norm = hint.replace(" ", "").lower()
-    zone_norm = zone.replace(" ", "").lower()
-    if hint_norm in zone_norm or zone_norm in hint_norm:
-        return 70
-    if zone in GENERIC_HVAC_ZONES:
-        return 10
-    return 50
-
-
 def match_hvac_services(
     services_data: list[dict[str, Any]],
     thermostats: dict[str, SavantThermostat],
 ) -> dict[str, SavantHvacServiceBinding]:
-    """Match HVAC services to thermostats by alias and first available zone."""
-    # This will match the first service found for a thermostat.
-    # In testing, services returns multiple services for a single thermostat, which all
-    # work on the same device ultimately. So the first matching one found is fine.
+    """Match HVAC services to thermostats by alias, using the first matching service."""
     bindings: dict[str, SavantHvacServiceBinding] = {}
 
     for device_id, thermostat in thermostats.items():
@@ -382,10 +347,9 @@ def match_hvac_services(
             if not isinstance(service_request, str):
                 continue
             try:
-                binding = parse_service_request(service_request)
+                bindings[device_id] = parse_service_request(service_request)
             except ValueError:
                 continue
-            bindings[device_id] = binding
             break
 
     return bindings
@@ -440,6 +404,44 @@ def parse_hvac_components(
             service=bindings.get(device_id),
         )
     return thermostats
+
+
+def merge_thermostat_state(
+    existing: SavantThermostatState, patch: SavantThermostatState
+) -> SavantThermostatState:
+    """Merge non-None fields from patch into existing thermostat state."""
+    fields = {
+        name: value
+        for name in (
+            "current_temperature",
+            "hvac_mode_raw",
+            "fan_mode_raw",
+            "cool_point",
+            "heat_point",
+            "hvac_action_raw",
+            "humidity_mode_raw",
+        )
+        if (value := getattr(patch, name)) is not None
+    }
+    return replace(existing, **fields) if fields else existing
+
+
+def state_patch_for_command(
+    command: str,
+    extra_arguments: dict[str, str] | None = None,
+) -> SavantThermostatState | None:
+    """Build an optimistic state patch for a Savant thermostat command."""
+    if command in SAVANT_MODE_FROM_COMMAND:
+        return SavantThermostatState(hvac_mode_raw=SAVANT_MODE_FROM_COMMAND[command])
+    if command in SAVANT_FAN_FROM_COMMAND:
+        return SavantThermostatState(fan_mode_raw=SAVANT_FAN_FROM_COMMAND[command])
+    if extra_arguments is None:
+        return None
+    if command == CMD_SET_HEAT_POINT and ARG_HEAT_POINT in extra_arguments:
+        return SavantThermostatState(heat_point=float(extra_arguments[ARG_HEAT_POINT]))
+    if command == CMD_SET_COOL_POINT and ARG_COOL_POINT in extra_arguments:
+        return SavantThermostatState(cool_point=float(extra_arguments[ARG_COOL_POINT]))
+    return None
 
 
 def apply_state_updates(
