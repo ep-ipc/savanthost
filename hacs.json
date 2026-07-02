@@ -1,3 +1,4 @@
 {
-  "name": "Savant Host"
+  "name": "Savant Host",
+  "render_readme": true,
 }
