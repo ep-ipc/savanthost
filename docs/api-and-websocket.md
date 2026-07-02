@@ -50,7 +50,6 @@ Here's a snippet of the endpoints relevant to this integration:
 | GET | `/config/v1/hvac/components` | HVAC thermostat components (deviceID, roomID, capabilities) |
 | GET | `/config/v1/hvac/components?RoomID={id}` | Components filtered by room |
 | GET | `/feedback/v1/states/hvac` | Per-thermostat state name index (`Thermostats` map keyed by component name) |
-| PUT | `/config/v1/hvac/components/{DeviceID}/command` | Issue HVAC command (see below) |
 
 ### Read states
 
