@@ -7,8 +7,8 @@ cd "$(dirname "$0")/.."
 python3 -m pip install --requirement requirements.txt
 
 # Home Assistant installs component dependencies at runtime, but imports them
-# in the same process before they are available. Pre-install default_config
-# requirements so the first hass start succeeds.
+# in the same process before they are available. Pre-install requirements for
+# common integrations and any domains with persisted config entries.
 python3 <<'PY'
 import json
 import pathlib
@@ -17,8 +17,9 @@ import sys
 
 import homeassistant
 
-root = pathlib.Path(homeassistant.__file__).parent / "components"
-domains = [
+repo_root = pathlib.Path.cwd()
+components = pathlib.Path(homeassistant.__file__).parent / "components"
+domains = {
     "frontend",
     "ffmpeg",
     "usb",
@@ -34,11 +35,19 @@ domains = [
     "go2rtc",
     "mobile_app",
     "zeroconf",
-]
+}
+config_entries = repo_root / "config" / ".storage" / "core.config_entries"
+if config_entries.exists():
+    data = json.loads(config_entries.read_text())
+    for entry in data.get("data", {}).get("entries", []):
+        domain = entry.get("domain")
+        if domain:
+            domains.add(domain)
+
 requirements: list[str] = []
 seen: set[str] = set()
-for domain in domains:
-    manifest = root / domain / "manifest.json"
+for domain in sorted(domains):
+    manifest = components / domain / "manifest.json"
     if not manifest.exists():
         continue
     data = json.loads(manifest.read_text())

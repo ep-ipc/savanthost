@@ -8,7 +8,7 @@ Home Assistant custom integration for lights and thermostats running on [Savant]
 
 - Discovers Savant lighting and thermostat details from the host configuration
 - Control light states and brightness
-- Read thermostat states (writing thermostat states TBD)
+- Read and control thermostat states (HVAC mode, setpoints, fan mode)
 
 ## Prerequisites
 

@@ -1,8 +1,14 @@
 """Data update coordinator for Savant Host."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from homeassistant.components.climate import HVACMode
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -18,9 +24,16 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import SavantApi, SavantConnectionError
 from .const import (
+    ARG_COOL_POINT,
+    ARG_HEAT_POINT,
+    CMD_SET_COOL_POINT,
+    CMD_SET_HEAT_POINT,
     DEFAULT_AVC_PORT,
     DEFAULT_PORT,
     DOMAIN,
+    HA_TO_SAVANT_FAN_MODE,
+    HA_TO_SAVANT_HVAC_MODE,
+    HVAC_COMMAND_REFRESH_DELAYS,
     HVAC_SCAN_INTERVAL,
     LOGGER,
     SCAN_INTERVAL,
@@ -28,14 +41,19 @@ from .const import (
 )
 from .models import (
     SavantHostData,
+    SavantThermostat,
     SavantThermostatState,
     apply_state_updates,
     apply_thermostat_state_updates,
+    build_hvac_service_command,
+    match_hvac_services,
+    merge_thermostat_state,
     parse_configuration,
     parse_hvac_components,
     parse_lighting_devices,
     parse_loads,
     parse_rooms,
+    state_patch_for_command,
 )
 from .websocket import SavantAvcWebSocket
 
@@ -66,6 +84,8 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
         self._hvac_task: asyncio.Task[None] | None = None
         self._stop_listeners: CALLBACK_TYPE | None = None
         self.temperature_unit: str = UnitOfTemperature.FAHRENHEIT
+        self.min_temp: float | None = None
+        self.max_temp: float | None = None
         super().__init__(
             hass,
             LOGGER,
@@ -99,6 +119,7 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
             loads_data = await self._api.async_get_loads()
             hvac_components_data = await self._api.async_get_hvac_components()
             hvac_settings_data = await self._api.async_get_hvac_settings()
+            services_data = await self._api.async_get_services()
         except SavantConnectionError as err:
             msg = "Error communicating with Savant host"
             raise UpdateFailed(msg) from err
@@ -117,26 +138,31 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
             if temp_unit_raw.lower() == "celsius"
             else UnitOfTemperature.FAHRENHEIT
         )
+        self.min_temp = _parse_optional_float(
+            hvac_settings_data.get("temperatureMin")
+            or hvac_settings_data.get("minTemperature")
+        )
+        self.max_temp = _parse_optional_float(
+            hvac_settings_data.get("temperatureMax")
+            or hvac_settings_data.get("maxTemperature")
+        )
 
-        state_names_by_device: dict[str, list[str]] = {}
-        for component in hvac_components_data:
-            device_id = component.get("deviceID", "")
-            try:
-                names = await self._api.async_get_hvac_state_names(device_id)
-                LOGGER.debug(
-                    "State names for HVAC component %s (%s): %s",
-                    component.get("name"),
-                    device_id,
-                    names,
-                )
-                state_names_by_device[device_id] = names
-            except SavantConnectionError:
+        thermostats_without_services = parse_hvac_components(hvac_components_data)
+        service_bindings = match_hvac_services(
+            services_data, thermostats_without_services
+        )
+        for device_id, thermostat in thermostats_without_services.items():
+            if device_id not in service_bindings:
                 LOGGER.warning(
-                    "Could not fetch state names for HVAC component %s", device_id
+                    "No HVAC service found for thermostat %s (%s); control disabled",
+                    thermostat.name,
+                    device_id,
                 )
-                state_names_by_device[device_id] = []
-
-        thermostats = parse_hvac_components(hvac_components_data, state_names_by_device)
+                continue
+        thermostats = parse_hvac_components(
+            hvac_components_data,
+            service_bindings,
+        )
 
         previous_states = self.data.states if self.data is not None else {}
         previous_thermostat_states = (
@@ -202,60 +228,199 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
         """Start the periodic thermostat state polling task."""
         LOGGER.debug("Starting HVAC poll")
 
-        async def _fetch_state(state_name: str | None) -> str | None:
-            """Fetch a single named state value, returning None on any error."""
-            if state_name is None:
-                return None
-            try:
-                result = await self._api.async_get_location_state(state_name)
-                return str(result["value"])
-            except SavantConnectionError, ValueError, KeyError:
-                return None
-
         async def poll() -> None:
             """Poll all thermostat states on a fixed interval."""
             while True:
+                if self.data is not None and self.data.thermostats:
+                    await self._async_poll_all_thermostats()
                 await asyncio.sleep(HVAC_SCAN_INTERVAL.total_seconds())
-                if self.data is None or not self.data.thermostats:
-                    continue
-                updates: dict[str, SavantThermostatState] = {}
-                for device_id, thermostat in self.data.thermostats.items():
-                    (
-                        temp_raw,
-                        mode_raw,
-                        fan_raw,
-                        cool_raw,
-                        heat_raw,
-                        action_raw,
-                        humidity_raw,
-                    ) = await asyncio.gather(
-                        _fetch_state(thermostat.current_temp_state_name),
-                        _fetch_state(thermostat.hvac_mode_state_name),
-                        _fetch_state(thermostat.fan_mode_state_name),
-                        _fetch_state(thermostat.cool_point_state_name),
-                        _fetch_state(thermostat.heat_point_state_name),
-                        _fetch_state(thermostat.hvac_action_state_name),
-                        _fetch_state(thermostat.humidity_mode_state_name),
-                    )
-                    updates[device_id] = SavantThermostatState(
-                        current_temperature=(
-                            float(temp_raw) if temp_raw is not None else None
-                        ),
-                        hvac_mode_raw=mode_raw,
-                        fan_mode_raw=fan_raw,
-                        cool_point=float(cool_raw) if cool_raw is not None else None,
-                        heat_point=float(heat_raw) if heat_raw is not None else None,
-                        hvac_action_raw=action_raw,
-                        humidity_mode_raw=humidity_raw,
-                    )
-                if updates and self.data is not None:
-                    self.async_set_updated_data(
-                        apply_thermostat_state_updates(self.data, updates)
-                    )
 
         self._hvac_task = self.config_entry.async_create_background_task(
             self.hass, poll(), "savanthost-hvac-poll"
         )
+
+    async def _async_fetch_state_value(self, state_name: str | None) -> str | None:
+        """Fetch a single named state value, returning None on any error."""
+        if state_name is None:
+            return None
+        try:
+            result = await self._api.async_get_location_state(state_name)
+            return str(result["value"])
+        except SavantConnectionError, ValueError, KeyError:
+            return None
+
+    async def _async_poll_thermostat_state(
+        self, thermostat: SavantThermostat
+    ) -> SavantThermostatState:
+        """Poll all state values for a single thermostat."""
+        (
+            temp_raw,
+            mode_raw,
+            fan_raw,
+            cool_raw,
+            heat_raw,
+            action_raw,
+            humidity_raw,
+        ) = await asyncio.gather(
+            self._async_fetch_state_value(thermostat.current_temp_state_name),
+            self._async_fetch_state_value(thermostat.hvac_mode_state_name),
+            self._async_fetch_state_value(thermostat.fan_mode_state_name),
+            self._async_fetch_state_value(thermostat.cool_point_state_name),
+            self._async_fetch_state_value(thermostat.heat_point_state_name),
+            self._async_fetch_state_value(thermostat.hvac_action_state_name),
+            self._async_fetch_state_value(thermostat.humidity_mode_state_name),
+        )
+        return SavantThermostatState(
+            current_temperature=float(temp_raw) if temp_raw is not None else None,
+            hvac_mode_raw=mode_raw,
+            fan_mode_raw=fan_raw,
+            cool_point=float(cool_raw) if cool_raw is not None else None,
+            heat_point=float(heat_raw) if heat_raw is not None else None,
+            hvac_action_raw=action_raw,
+            humidity_mode_raw=humidity_raw,
+        )
+
+    async def _async_poll_all_thermostats(self) -> None:
+        """Poll all thermostats and update coordinator data."""
+        if self.data is None or not self.data.thermostats:
+            return
+        updates: dict[str, SavantThermostatState] = {}
+        for device_id, thermostat in self.data.thermostats.items():
+            updates[device_id] = await self._async_poll_thermostat_state(thermostat)
+        self.async_set_updated_data(apply_thermostat_state_updates(self.data, updates))
+
+    async def _async_poll_thermostat(self, device_id: str) -> None:
+        """Poll a single thermostat and update coordinator data."""
+        if self.data is None:
+            return
+        thermostat = self.data.thermostats.get(device_id)
+        if thermostat is None:
+            return
+        state = await self._async_poll_thermostat_state(thermostat)
+        self.async_set_updated_data(
+            apply_thermostat_state_updates(self.data, {device_id: state})
+        )
+
+    @callback
+    def _async_patch_thermostat_state(
+        self, device_id: str, patch: SavantThermostatState
+    ) -> None:
+        """Apply an optimistic thermostat state patch for immediate UI feedback."""
+        if self.data is None:
+            return
+        existing = self.data.thermostat_states.get(device_id) or SavantThermostatState()
+        merged = merge_thermostat_state(existing, patch)
+        self.async_set_updated_data(
+            apply_thermostat_state_updates(self.data, {device_id: merged})
+        )
+
+    def _schedule_thermostat_refresh(self, device_id: str) -> None:
+        """Schedule background re-polls to reconcile with Savant after a command."""
+        self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_refresh_thermostat_state(device_id),
+            f"savanthost-thermostat-refresh-{device_id}",
+        )
+
+    async def _async_refresh_thermostat_state(self, device_id: str) -> None:
+        """Re-poll a thermostat after delays to pick up Savant state changes."""
+        for delay in HVAC_COMMAND_REFRESH_DELAYS:
+            await asyncio.sleep(delay)
+            await self._async_poll_thermostat(device_id)
+
+    def _get_thermostat(self, device_id: str) -> SavantThermostat:
+        """Return a thermostat or raise if missing or not controllable."""
+        if self.data is None:
+            msg = "Coordinator data not available"
+            raise SavantConnectionError(msg)
+        thermostat = self.data.thermostats.get(device_id)
+        if thermostat is None:
+            msg = f"Thermostat {device_id} not found"
+            raise SavantConnectionError(msg)
+        if thermostat.service is None:
+            msg = f"Thermostat {thermostat.name} has no service binding"
+            raise SavantConnectionError(msg)
+        return thermostat
+
+    async def async_send_thermostat_command(
+        self,
+        device_id: str,
+        command: str,
+        extra_arguments: dict[str, str] | None = None,
+        *,
+        state_patch: SavantThermostatState | None = None,
+    ) -> None:
+        """Send a command to a thermostat via POST /config/v1/services."""
+        thermostat = self._get_thermostat(device_id)
+        body = build_hvac_service_command(
+            thermostat.service,
+            thermostat.thermostat_address,
+            command,
+            extra_arguments,
+        )
+        await self._api.async_execute_service(body)
+        patch = state_patch or state_patch_for_command(command, extra_arguments)
+        if patch is not None:
+            self._async_patch_thermostat_state(device_id, patch)
+        self._schedule_thermostat_refresh(device_id)
+
+    async def async_set_thermostat_hvac_mode(
+        self, device_id: str, hvac_mode: HVACMode
+    ) -> None:
+        """Set the HVAC mode for a thermostat."""
+        command = HA_TO_SAVANT_HVAC_MODE.get(hvac_mode)
+        if command is None:
+            msg = f"Unsupported HVAC mode: {hvac_mode}"
+            raise SavantConnectionError(msg)
+        await self.async_send_thermostat_command(device_id, command)
+
+    async def async_set_thermostat_temperature(
+        self,
+        device_id: str,
+        *,
+        heat: float | None = None,
+        cool: float | None = None,
+    ) -> None:
+        """Set heat and/or cool setpoints for a thermostat."""
+        thermostat = self._get_thermostat(device_id)
+        patch = SavantThermostatState()
+        if heat is not None:
+            heat_arg = str(int(heat) if heat == int(heat) else heat)
+            body = build_hvac_service_command(
+                thermostat.service,
+                thermostat.thermostat_address,
+                CMD_SET_HEAT_POINT,
+                {ARG_HEAT_POINT: heat_arg},
+            )
+            await self._api.async_execute_service(body)
+            patch = merge_thermostat_state(
+                patch, SavantThermostatState(heat_point=float(heat_arg))
+            )
+        if cool is not None:
+            cool_arg = str(int(cool) if cool == int(cool) else cool)
+            body = build_hvac_service_command(
+                thermostat.service,
+                thermostat.thermostat_address,
+                CMD_SET_COOL_POINT,
+                {ARG_COOL_POINT: cool_arg},
+            )
+            await self._api.async_execute_service(body)
+            patch = merge_thermostat_state(
+                patch, SavantThermostatState(cool_point=float(cool_arg))
+            )
+        if heat is not None or cool is not None:
+            self._async_patch_thermostat_state(device_id, patch)
+        self._schedule_thermostat_refresh(device_id)
+
+    async def async_set_thermostat_fan_mode(
+        self, device_id: str, fan_mode: str
+    ) -> None:
+        """Set the fan mode for a thermostat."""
+        command = HA_TO_SAVANT_FAN_MODE.get(fan_mode.lower())
+        if command is None:
+            msg = f"Unsupported fan mode: {fan_mode}"
+            raise SavantConnectionError(msg)
+        await self.async_send_thermostat_command(device_id, command)
 
     async def async_turn_on_load(self, load_id: str, brightness: int | None) -> None:
         """Turn on a load, optionally setting brightness."""
@@ -280,3 +445,13 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
             name=name,
             model="Host",
         )
+
+
+def _parse_optional_float(value: Any) -> float | None:
+    """Parse an optional float from HVAC settings."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except TypeError, ValueError:
+        return None

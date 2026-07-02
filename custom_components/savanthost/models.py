@@ -1,10 +1,25 @@
 """Data models for the Savant Host integration."""
 
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, replace
 from typing import Any
+
+from .const import (
+    ARG_COOL_POINT,
+    ARG_HEAT_POINT,
+    ARG_THERMOSTAT_ADDRESS,
+    CMD_SET_COOL_POINT,
+    CMD_SET_HEAT_POINT,
+    HVAC_SERVICE_TYPES,
+    SAVANT_FAN_FROM_COMMAND,
+    SAVANT_MODE_FROM_COMMAND,
+)
 
 WS_URI_DEVICE_RECOGNIZED = "session/deviceRecognized"
 WS_URI_STATE_UPDATE = "state/update"
+MIN_SERVICE_REQUEST_PARTS = 5
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -62,12 +77,24 @@ class SavantThermostatState:
 
 
 @dataclass(slots=True)
+class SavantHvacServiceBinding:
+    """Parsed HVAC service routing fields for POST /config/v1/services."""
+
+    zone: str
+    component: str
+    logical_component: str
+    service_variant_id: str
+    service_type: str
+
+
+@dataclass(slots=True)
 class SavantThermostat:
     """Savant HVAC thermostat component."""
 
     device_id: str
     room_id: str
     name: str
+    thermostat_address: str
     current_temp_state_name: str | None
     hvac_mode_state_name: str | None
     fan_mode_state_name: str | None
@@ -78,6 +105,7 @@ class SavantThermostat:
     heat_supported: bool
     cool_supported: bool
     auto_supported: bool
+    service: SavantHvacServiceBinding | None = None
 
 
 @dataclass(slots=True)
@@ -278,47 +306,142 @@ def _resolve_state_name(
     base = next((s for s in state_names if s.endswith(f".{base_suffix}")), None)
     if base is not None:
         return f"{base}_{address1}"
+    _LOGGER.warning("Could not resolve state name for %s %s", base_suffix, address1)
     return None
+
+
+def parse_service_request(service_request: str) -> SavantHvacServiceBinding:
+    """
+    Parse a dash-separated serviceRequest string.
+
+    Format: zone-component-logicalComponent-variant-type
+    Component names may contain dashes; fixed tail fields are parsed from the right.
+    """
+    parts = service_request.split("-")
+    if len(parts) < MIN_SERVICE_REQUEST_PARTS:
+        msg = f"Invalid serviceRequest: {service_request!r}"
+        raise ValueError(msg)
+    return SavantHvacServiceBinding(
+        zone=parts[0],
+        component="-".join(parts[1:-3]),
+        logical_component=parts[-3],
+        service_variant_id=parts[-2],
+        service_type=parts[-1],
+    )
+
+
+def match_hvac_services(
+    services_data: list[dict[str, Any]],
+    thermostats: dict[str, SavantThermostat],
+) -> dict[str, SavantHvacServiceBinding]:
+    """Match HVAC services to thermostats by alias, using the first matching service."""
+    bindings: dict[str, SavantHvacServiceBinding] = {}
+
+    for device_id, thermostat in thermostats.items():
+        for service in services_data:
+            if service.get("name") not in HVAC_SERVICE_TYPES:
+                continue
+            if service.get("alias") != thermostat.name:
+                continue
+            service_request = service.get("serviceRequest")
+            if not isinstance(service_request, str):
+                continue
+            try:
+                bindings[device_id] = parse_service_request(service_request)
+            except ValueError:
+                continue
+            break
+
+    return bindings
+
+
+def build_hvac_service_command(
+    binding: SavantHvacServiceBinding,
+    thermostat_address: str,
+    command: str,
+    extra_arguments: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build the POST body for /config/v1/services."""
+    arguments: dict[str, str] = {ARG_THERMOSTAT_ADDRESS: thermostat_address}
+    if extra_arguments:
+        arguments.update(extra_arguments)
+    return {
+        "command": command,
+        "component": binding.component,
+        "logicalComponent": binding.logical_component,
+        "serviceVariantID": binding.service_variant_id,
+        "type": binding.service_type,
+        "zone": binding.zone,
+        "arguments": arguments,
+    }
 
 
 def parse_hvac_components(
     components_data: list[dict[str, Any]],
-    state_names_by_device: dict[str, list[str]],
+    service_bindings: dict[str, SavantHvacServiceBinding] | None = None,
 ) -> dict[str, SavantThermostat]:
     """Parse HVAC component data into SavantThermostat objects."""
+    bindings = service_bindings or {}
     thermostats: dict[str, SavantThermostat] = {}
     for component in components_data:
         device_id = component["deviceID"]
-        address1 = component.get("address1", "1")
-        names = state_names_by_device.get(device_id, [])
+        address1 = str(component.get("address1", "1"))
         thermostats[device_id] = SavantThermostat(
             device_id=device_id,
             room_id=component["roomID"],
             name=component["name"],
-            current_temp_state_name=_resolve_state_name(
-                names, "ThermostatCurrentTemperature", address1
-            ),
-            hvac_mode_state_name=_resolve_state_name(names, "ThermostatMode", address1),
-            fan_mode_state_name=_resolve_state_name(
-                names, "ThermostatFanMode", address1
-            ),
-            cool_point_state_name=_resolve_state_name(
-                names, "ThermostatCurrentCoolPoint", address1
-            ),
-            heat_point_state_name=_resolve_state_name(
-                names, "ThermostatCurrentHeatPoint", address1
-            ),
-            hvac_action_state_name=_resolve_state_name(
-                names, "ThermostatHVACState", address1
-            ),
-            humidity_mode_state_name=_resolve_state_name(
-                names, "ThermostatHumidityMode", address1
-            ),
+            thermostat_address=address1,
+            current_temp_state_name=f"{component['name']}.HVAC_controller.ThermostatCurrentTemperature_{address1}",
+            hvac_mode_state_name=f"{component['name']}.HVAC_controller.ThermostatMode_{address1}",
+            fan_mode_state_name=f"{component['name']}.HVAC_controller.ThermostatFanMode_{address1}",
+            cool_point_state_name=f"{component['name']}.HVAC_controller.ThermostatCurrentCoolPoint_{address1}",
+            heat_point_state_name=f"{component['name']}.HVAC_controller.ThermostatCurrentHeatPoint_{address1}",
+            hvac_action_state_name=f"{component['name']}.HVAC_controller.ThermostatHVACState_{address1}",
+            humidity_mode_state_name=f"{component['name']}.HVAC_controller.ThermostatHumidityMode_{address1}",
             heat_supported=bool(component.get("heatControlSupported")),
             cool_supported=bool(component.get("coolControlSupported")),
             auto_supported=bool(component.get("autoControlSupported")),
+            service=bindings.get(device_id),
         )
     return thermostats
+
+
+def merge_thermostat_state(
+    existing: SavantThermostatState, patch: SavantThermostatState
+) -> SavantThermostatState:
+    """Merge non-None fields from patch into existing thermostat state."""
+    fields = {
+        name: value
+        for name in (
+            "current_temperature",
+            "hvac_mode_raw",
+            "fan_mode_raw",
+            "cool_point",
+            "heat_point",
+            "hvac_action_raw",
+            "humidity_mode_raw",
+        )
+        if (value := getattr(patch, name)) is not None
+    }
+    return replace(existing, **fields) if fields else existing
+
+
+def state_patch_for_command(
+    command: str,
+    extra_arguments: dict[str, str] | None = None,
+) -> SavantThermostatState | None:
+    """Build an optimistic state patch for a Savant thermostat command."""
+    if command in SAVANT_MODE_FROM_COMMAND:
+        return SavantThermostatState(hvac_mode_raw=SAVANT_MODE_FROM_COMMAND[command])
+    if command in SAVANT_FAN_FROM_COMMAND:
+        return SavantThermostatState(fan_mode_raw=SAVANT_FAN_FROM_COMMAND[command])
+    if extra_arguments is None:
+        return None
+    if command == CMD_SET_HEAT_POINT and ARG_HEAT_POINT in extra_arguments:
+        return SavantThermostatState(heat_point=float(extra_arguments[ARG_HEAT_POINT]))
+    if command == CMD_SET_COOL_POINT and ARG_COOL_POINT in extra_arguments:
+        return SavantThermostatState(cool_point=float(extra_arguments[ARG_COOL_POINT]))
+    return None
 
 
 def apply_state_updates(
