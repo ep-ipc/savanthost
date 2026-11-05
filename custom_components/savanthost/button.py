@@ -3,11 +3,12 @@
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import SavantConnectionError
-from .const import DOMAIN
+from .const import DOMAIN, LOGGER
 from .coordinator import SavantConfigEntry, SavantCoordinator
 
 if TYPE_CHECKING:
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
     from .models import SavantLightingScene
 
 PARALLEL_UPDATES = 0
+LIGHTING_SCENES_AREA = "Lighting Scenes"
+_DEFAULT_AREA_APPLIED = "default_area_applied"
 
 
 async def async_setup_entry(
@@ -48,8 +51,37 @@ class SavantLightingSceneButton(CoordinatorEntity[SavantCoordinator], ButtonEnti
         configuration_id = coordinator.data.configuration.configuration_id
         self._attr_unique_id = f"{configuration_id}-scene-{scene.lighting_scene_id}"
         self._attr_name = scene.name
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, configuration_id)},
+
+    async def async_added_to_hass(self) -> None:
+        """Assign the Lighting Scenes area the first time this button is seen."""
+        await super().async_added_to_hass()
+        try:
+            self._async_ensure_default_area()
+        except Exception:  # noqa: BLE001
+            LOGGER.exception(
+                "Failed to assign %s to area %s",
+                self.entity_id,
+                LIGHTING_SCENES_AREA,
+            )
+
+    def _async_ensure_default_area(self) -> None:
+        """Put an unassigned button in Lighting Scenes once."""
+        entry = self.registry_entry
+        if entry is None:
+            return
+        domain_options = entry.options.get(DOMAIN, {})
+        if domain_options.get(_DEFAULT_AREA_APPLIED):
+            return
+        entity_registry = er.async_get(self.hass)
+        if entry.area_id is None:
+            area = ar.async_get(self.hass).async_get_or_create(LIGHTING_SCENES_AREA)
+            self.registry_entry = entity_registry.async_update_entity(
+                self.entity_id, area_id=area.id
+            )
+        self.registry_entry = entity_registry.async_update_entity_options(
+            self.entity_id,
+            DOMAIN,
+            {**domain_options, _DEFAULT_AREA_APPLIED: True},
         )
 
     @property
