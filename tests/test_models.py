@@ -128,7 +128,12 @@ def test_parse_lighting_scenes() -> None:
                 "lightingSceneID": "scene-1",
                 "name": "Exterior Lights",
                 "type": 0,
-                "members": [{"loadID": "load-1"}],
+                "members": [
+                    {"loadID": "load-1", "name": "Front Door Sconces"},
+                    {"loadID": "load-2"},
+                    "not-a-member",
+                    {"loadID": "load-3", "name": "Roof Top Parapet"},
+                ],
             },
             {
                 "lightingSceneID": "scene-2",
@@ -142,9 +147,12 @@ def test_parse_lighting_scenes() -> None:
     )
     assert set(scenes) == {"scene-1", "scene-2"}
     assert scenes["scene-1"] == SavantLightingScene(
-        lighting_scene_id="scene-1", name="Exterior Lights"
+        lighting_scene_id="scene-1",
+        name="Exterior Lights",
+        member_names=("Front Door Sconces", "Roof Top Parapet"),
     )
     assert scenes["scene-2"].name == "All Off"
+    assert scenes["scene-2"].member_names == ()
 
 
 def test_apply_state_updates_keeps_lighting_scenes() -> None:

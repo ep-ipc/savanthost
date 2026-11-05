@@ -55,6 +55,7 @@ class SavantLightingScene:
 
     lighting_scene_id: str
     name: str
+    member_names: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -214,8 +215,23 @@ def parse_lighting_scenes(
         scenes[lighting_scene_id] = SavantLightingScene(
             lighting_scene_id=lighting_scene_id,
             name=name,
+            member_names=_parse_scene_member_names(scene_data.get("members")),
         )
     return scenes
+
+
+def _parse_scene_member_names(members: Any) -> tuple[str, ...]:
+    """Return member names, skipping entries without a name."""
+    if not isinstance(members, list):
+        return ()
+    names: list[str] = []
+    for member in members:
+        if not isinstance(member, dict):
+            continue
+        member_name = member.get("name")
+        if isinstance(member_name, str) and member_name:
+            names.append(member_name)
+    return tuple(names)
 
 
 def parse_loads(

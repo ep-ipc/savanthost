@@ -1,6 +1,6 @@
 """Button platform for Savant Host lighting scenes."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -56,6 +56,11 @@ class SavantLightingSceneButton(CoordinatorEntity[SavantCoordinator], ButtonEnti
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return scene member names."""
+        return {"scene_members": list(self._scene.member_names)}
 
     async def async_press(self) -> None:
         """Apply the lighting scene."""
