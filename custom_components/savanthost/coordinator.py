@@ -51,6 +51,7 @@ from .models import (
     parse_configuration,
     parse_hvac_components,
     parse_lighting_devices,
+    parse_lighting_scenes,
     parse_loads,
     parse_rooms,
     state_patch_for_command,
@@ -117,6 +118,7 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
             configuration_data = await self._api.async_get_active_configuration()
             lighting_data = await self._api.async_get_lighting_config()
             loads_data = await self._api.async_get_loads()
+            scenes_data = await self._api.async_get_lighting_scenes()
             hvac_components_data = await self._api.async_get_hvac_components()
             hvac_settings_data = await self._api.async_get_hvac_settings()
             services_data = await self._api.async_get_services()
@@ -131,6 +133,7 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
         rooms = parse_rooms(lighting_data)
         devices = parse_lighting_devices(lighting_data)
         loads = parse_loads(loads_data, devices)
+        lighting_scenes = parse_lighting_scenes(scenes_data)
 
         temp_unit_raw = hvac_settings_data.get("temperatureUnits", "Fahrenheit")
         self.temperature_unit = (
@@ -175,6 +178,7 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
             states=previous_states,
             thermostats=thermostats,
             thermostat_states=previous_thermostat_states,
+            lighting_scenes=lighting_scenes,
         )
 
         if self._ws_task is None and loads:
@@ -421,6 +425,10 @@ class SavantCoordinator(DataUpdateCoordinator[SavantHostData]):
             msg = f"Unsupported fan mode: {fan_mode}"
             raise SavantConnectionError(msg)
         await self.async_send_thermostat_command(device_id, command)
+
+    async def async_apply_lighting_scene(self, lighting_scene_id: str) -> None:
+        """Apply a lighting scene."""
+        await self._api.async_apply_lighting_scene(lighting_scene_id)
 
     async def async_turn_on_load(self, load_id: str, brightness: int | None) -> None:
         """Turn on a load, optionally setting brightness."""

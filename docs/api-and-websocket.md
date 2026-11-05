@@ -36,6 +36,7 @@ Here's a snippet of the endpoints relevant to this integration:
 | GET | `/config/v1/lighting/loads/{id}` | Single load |
 | GET | `/config/v1/lighting/scenes` | All lighting scenes |
 | GET | `/config/v1/lighting/scenes/{id}` | Single scene with members |
+| POST | `/control/v1/lighting/scenes/{id}/apply` | Apply a lighting scene |
 | GET | `/config/v1/lighting/groups` | Lighting groups |
 | GET | `/config/v1/lighting/buttons/{id}` | Button config |
 | GET | `/config/v1/configuration/active` | Active config info |

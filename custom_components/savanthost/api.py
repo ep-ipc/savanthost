@@ -78,6 +78,22 @@ class SavantApi:
             {"loadLevel": load_level},
         )
 
+    async def async_get_lighting_scenes(self) -> list[dict[str, Any]]:
+        """Get all lighting scenes."""
+        result = await self._async_get_json("/config/v1/lighting/scenes")
+        if not isinstance(result, list):
+            msg = "Unexpected lighting scenes response"
+            raise SavantApiError(msg)
+        return result
+
+    async def async_apply_lighting_scene(self, lighting_scene_id: str) -> None:
+        """Apply a lighting scene."""
+        _LOGGER.debug("Applying lighting scene %s", lighting_scene_id)
+        await self._async_post_json(
+            f"/control/v1/lighting/scenes/{lighting_scene_id}/apply",
+            {},
+        )
+
     async def async_get_hvac_components(self) -> list[dict[str, Any]]:
         """Get all HVAC thermostat components."""
         result = await self._async_get_json("/config/v1/hvac/components")
@@ -92,12 +108,9 @@ class SavantApi:
 
     async def async_get_location_state(self, state_name: str) -> dict[str, Any]:
         """Read a named state value from StateCenter."""
-        _LOGGER.debug("Getting location state for %s", state_name)
-        result = await self._async_get_json(
+        return await self._async_get_json(
             "/config/v1/location/state", params={"state": state_name}
         )
-        _LOGGER.debug("Location state for %s: %s", state_name, result)
-        return result
 
     async def async_get_services(self) -> list[dict[str, Any]]:
         """Get all Savant services."""
