@@ -50,6 +50,14 @@ class SavantLightingDevice:
 
 
 @dataclass(slots=True)
+class SavantLightingScene:
+    """Savant lighting scene that can be applied from a button."""
+
+    lighting_scene_id: str
+    name: str
+
+
+@dataclass(slots=True)
 class SavantLoad:
     """Savant lighting load."""
 
@@ -118,6 +126,7 @@ class SavantHostData:
     states: dict[str, int] = field(default_factory=dict)
     thermostats: dict[str, SavantThermostat] = field(default_factory=dict)
     thermostat_states: dict[str, SavantThermostatState] = field(default_factory=dict)
+    lighting_scenes: dict[str, SavantLightingScene] = field(default_factory=dict)
 
     def get_load_level(self, load_id: str) -> int | None:
         """Return the Savant load level (0-100) for a load."""
@@ -188,6 +197,25 @@ def parse_rooms(lighting_data: dict[str, Any]) -> dict[str, SavantRoom]:
         room["roomID"]: SavantRoom(room_id=room["roomID"], name=room["name"])
         for room in lighting_data.get("rooms", [])
     }
+
+
+def parse_lighting_scenes(
+    scenes_data: list[dict[str, Any]],
+) -> dict[str, SavantLightingScene]:
+    """Parse lighting scenes, skipping entries without an id or name."""
+    scenes: dict[str, SavantLightingScene] = {}
+    for scene_data in scenes_data:
+        lighting_scene_id = scene_data.get("lightingSceneID")
+        name = scene_data.get("name")
+        if not isinstance(lighting_scene_id, str) or not lighting_scene_id:
+            continue
+        if not isinstance(name, str) or not name:
+            continue
+        scenes[lighting_scene_id] = SavantLightingScene(
+            lighting_scene_id=lighting_scene_id,
+            name=name,
+        )
+    return scenes
 
 
 def parse_loads(
@@ -457,6 +485,7 @@ def apply_state_updates(
         states={**data.states, **updates},
         thermostats=data.thermostats,
         thermostat_states=data.thermostat_states,
+        lighting_scenes=data.lighting_scenes,
     )
 
 
@@ -473,4 +502,5 @@ def apply_thermostat_state_updates(
         states=data.states,
         thermostats=data.thermostats,
         thermostat_states={**data.thermostat_states, **updates},
+        lighting_scenes=data.lighting_scenes,
     )

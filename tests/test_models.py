@@ -9,14 +9,19 @@ from custom_components.savanthost.const import (
     CMD_SET_HVAC_MODE_HEAT,
 )
 from custom_components.savanthost.models import (
+    SavantConfiguration,
+    SavantHostData,
+    SavantLightingScene,
     SavantLoad,
     SavantThermostat,
     SavantThermostatState,
+    apply_state_updates,
     build_hvac_service_command,
     compute_load_hex_address,
     match_hvac_services,
     merge_thermostat_state,
     parse_avc_state_update,
+    parse_lighting_scenes,
     parse_load_level_value,
     parse_module_get_response,
     parse_module_level_at_offset,
@@ -113,6 +118,47 @@ def test_parse_module_get_response_uses_raw_address() -> None:
         loads,
     )
     assert updates == {"load-1": 80, "load-2": 60}
+
+
+def test_parse_lighting_scenes() -> None:
+    """Test parsing lighting scenes and skipping incomplete entries."""
+    scenes = parse_lighting_scenes(
+        [
+            {
+                "lightingSceneID": "scene-1",
+                "name": "Exterior Lights",
+                "type": 0,
+                "members": [{"loadID": "load-1"}],
+            },
+            {
+                "lightingSceneID": "scene-2",
+                "name": "All Off",
+            },
+            {"name": "Missing Id"},
+            {"lightingSceneID": "scene-3"},
+            {"lightingSceneID": "", "name": "Empty Id"},
+            {"lightingSceneID": "scene-4", "name": ""},
+        ]
+    )
+    assert set(scenes) == {"scene-1", "scene-2"}
+    assert scenes["scene-1"] == SavantLightingScene(
+        lighting_scene_id="scene-1", name="Exterior Lights"
+    )
+    assert scenes["scene-2"].name == "All Off"
+
+
+def test_apply_state_updates_keeps_lighting_scenes() -> None:
+    """Test that light state updates preserve lighting scenes."""
+    scene = SavantLightingScene(lighting_scene_id="scene-1", name="Exterior Lights")
+    data = SavantHostData(
+        configuration=SavantConfiguration(configuration_id="cfg-1", name="Host"),
+        rooms={},
+        loads={},
+        lighting_scenes={"scene-1": scene},
+    )
+    updated = apply_state_updates(data, {"load-1": 50})
+    assert updated.lighting_scenes == {"scene-1": scene}
+    assert updated.states == {"load-1": 50}
 
 
 def test_parse_service_request() -> None:
